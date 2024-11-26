@@ -1,18 +1,28 @@
-# create output dir if not exists
 import os
 import re
 import sys
-# generate six-character uuid as file basename
 import uuid
-
+import argparse
+import streamlit as st
+from openai import OpenAI
 import nltk
 import pandas as pd
-
 from collections import Counter
 from nltk.corpus import stopwords
 
 # Download stopwords if not already present
 nltk.download('stopwords', quiet=True)
+
+xai_api_key = os.getenv('xAI_API_KEY')
+base_url = "https://api.x.ai/v1"
+
+todays_edition = None
+
+if xai_api_key is None:
+    st.error("You must provide an API key from xAI.")
+if not xai_api_key.startswith("xai"):
+    st.error("That doesn't look like an API key from xAI.")
+
 
 def transform_to_google_sheets_format(text):
     lines = text.split('\n')
@@ -40,67 +50,83 @@ def transform_to_google_sheets_format(text):
 
 
 def transform_response_text_into_list(text):
-    # break string into list of strings broken at each "\nResponse"
     responses = re.split(r'\nResponse \d+', text)
-    # remove empty strings from list
     responses = [response.strip() for response in responses if response.strip()]
     return responses
 
 
 def most_frequent_words(text, n=1):
-    # Define stop words
     stop_words = set(stopwords.words('english'))
-
-    # Remove punctuation and convert to lower case
     text = re.sub(r'[^\w\s]', '', text).lower()
-
-    # Split text into words
     words = text.split()
-
-    # Filter out stop words
     filtered_words = [word for word in words if word not in stop_words]
-
-    # Count words
     word_counts = Counter(filtered_words)
-
-    # Return the n most common words
     most_common = word_counts.most_common(n)
     return [word for word, count in most_common]
 
-if __name__ == "__main__":
+
+def call_xai_api(prompt, model="grok-beta"):
+    client = OpenAI(
+        api_key=xai_api_key,
+        base_url=base_url,
+    )
+    response = client.chat.completions.create(
+        model=model,
+        messages=[
+            {"role": "user", "content": prompt},
+        ]
+    )
+    return response.choices[0].message.content
+
+
+def main(args):
     input_dir = "input"
     if not os.path.exists(input_dir):
         os.makedirs(input_dir)
-    import_file = sys.argv[1]
+    import_file = args.input
     import_file_path = os.path.join(input_dir, import_file)
     with open(import_file_path, "r") as f:
         text = f.read()
     output_dir = "output"
 
-
     list_of_responses = transform_response_text_into_list(text)
-    # remove lines beginning with "Response X" and "Words" from each item in the list
     cleaned_responses = []
-    for response in list_of_responses:
+    for i, response in enumerate(list_of_responses):
         lines = response.splitlines()
         cleaned_lines = [line for line in lines if
                          not line.startswith("Words") and not line.startswith("Characters") and not line.startswith(
-                             "Paragraphs")]
-        cleaned_responses.append("\n".join(cleaned_lines))
+                             "Paragraphs") and not line.startswith("Response ")]
+        cleaned_responses.append(
+            {"Response": f"Response {i + 1}", "Text": "\n".join(cleaned_lines)})
 
     response_df = pd.DataFrame(cleaned_responses)
     print(response_df)
 
-    most_frequent = response_df.applymap(lambda x: most_frequent_words(x, n=3) if pd.notna(x) else [])
+    if args.use_xai:
+        api_responses = []
+        for index, row in response_df.iterrows():
+            prompt = f"In fifteen words or less, identify the key weaknesses in this text: {row['Text']}"
+            api_response = call_xai_api(prompt)
+            print(api_response)
+            api_responses.append(api_response)
+        response_df['API Response'] = api_responses
+
+    most_frequent = response_df.apply(
+        lambda row: most_frequent_words(row['Text'], n=3) if pd.notna(row['Text']) else [], axis=1)
+    response_df['Most Frequent Words'] = most_frequent
     print(most_frequent)
 
-    # save to file
     file_basename = str(uuid.uuid4())[:8] + ".csv"
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
     filepath = os.path.join(output_dir, file_basename)
-    response_df.to_csv(file_basename)
+    response_df.to_csv(filepath)
 
 
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description='Process text responses and optionally use xAI API.')
+    parser.add_argument('--input', required=True, help='Path to the input file')
+    parser.add_argument('--use_xai', action='store_true', help='Flag to enable xAI API for text analysis')
+    args = parser.parse_args()
 
-
+    main(args)
