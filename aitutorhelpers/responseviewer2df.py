@@ -278,7 +278,7 @@ def main(args):
     with st.expander("16-up notepad"):
        #   st.write(st.session_state["responses_with_notes"])
         updated_responses = display_4x4_grid(st.session_state["responses_with_notes"])
-        st.write(updated_responses)
+        #st.write(updated_responses)
         st.session_state.responses = updated_responses
 
     index_to_dataframe(index)
