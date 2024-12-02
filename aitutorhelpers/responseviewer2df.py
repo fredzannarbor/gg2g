@@ -130,7 +130,7 @@ def display_4x4_grid(responses=None):
     responses_with_notes = responses
     # Create 4 columns
     cols = st.columns(4)
-    with st.form("16-responses"):
+    with st.form("16-notes"):
         # Display responses in a 4x4 grid
         for i, col in enumerate(cols):
             for j in range(4):
@@ -150,8 +150,56 @@ def display_4x4_grid(responses=None):
             st.session_state["responses_with_notes"] = responses_with_notes
     return
 
+def display_4x4_text(responses=None, key="keyphrases"):
+    if responses is None:
+        # Initialize responses if not provided
+        responses = {f'{key}_{i}': '' for i in range(1, 17)}
 
-def extract_key_phrases(text):
+    # Create 4 columns
+    cols = st.columns(4, vertical_alignment="top")
+
+    # Display responses in a 4x4 grid
+    for i, col in enumerate(cols):
+        for j in range(4):
+            index = i * 4 + j
+            index_show = index + 1
+
+            if isinstance(responses[index], list):
+                display_text = "\n- ".join(responses[index])
+            with col.container(border=True):
+                col.markdown(f"- {display_text}")
+                col.write('---')
+
+    return
+
+def display_4x4_images(responses=None, key="from-responses") -> None:
+    if responses is None:
+        # Initialize responses if not provided
+        responses_with_notes = {f'response_{i}': '' for i in range(1, 17)}
+    response_text = ""
+    # Create 4 columns
+    cols = st.columns(4)
+
+    with st.form(f"16-{key}"):
+        # Display responses in a 4x4 grid
+        for i, col in enumerate(cols):
+            for j in range(4):
+                index = i * 4 + j
+                index_show = index + 1
+                key = f'response_{index}'
+                col.info(f"generating image {index_show}")
+                #st.write(responses)
+                if isinstance(responses[index], list):
+                    submit_text = "\n".join(responses[index])
+                else:
+                    submit_text = responses[index]
+
+                wordcloud_image = create_word_cloud_from_response(submit_text)
+                col.image(wordcloud_image, caption=f"Word Cloud of Response {index_show}", use_container_width=False)
+
+    return
+
+def extract_key_phrases_by_relevance(text, n=5):
     from nltk.tokenize import word_tokenize, sent_tokenize
     from nltk.tag import pos_tag
 
@@ -179,10 +227,30 @@ def extract_key_phrases(text):
     # Filter for phrases with more than one word to get key phrases rather than single words
     # This removes duplicates
     unique_phrase_candidates = [phrase for phrase in phrases if len(phrase.split()) > 1]
-    unique_phrases = list(set(unique_phrase_candidates))
+    unique_phrases  = list(set(unique_phrase_candidates))
     # sorted alphabetically, indifferent to case
-    unique_phrases.sort(key=lambda x: x.lower())
-    return unique_phrases
+    return unique_phrases[:n]
+
+def extract_key_phrases_and_sort(text):
+    unsorted_key_phrases = extract_key_phrases_by_relevance(text)
+    sorted_key_phrases = unsorted_key_phrases.sorted()
+    return sorted_key_phrases
+
+def create_word_cloud_from_response(text):
+    from wordcloud import WordCloud
+    import matplotlib.pyplot as plt
+    wordcloud_raw = WordCloud(width=400, height=400, background_color='white').generate(text)
+
+    # Convert the WordCloud object to a PIL Image
+    wordcloud_image = wordcloud_raw.to_image()
+
+    # Convert PIL Image to bytes
+    img_byte_arr = io.BytesIO()
+    wordcloud_image.save(img_byte_arr, format='PNG')
+    img_byte_arr = img_byte_arr.getvalue()
+
+    return img_byte_arr
+
 
 def create_index_by_row_number(df):
     stop_words = set(stopwords.words('english'))
@@ -228,7 +296,7 @@ def display_index_as_tree(index):
                 st.write(f"- Row {location}")
 
 def analyze_prompt(prompt):
-    prompt_keyphrases = extract_key_phrases(prompt)
+    prompt_keyphrases = extract_key_phrases_by_relevance(prompt)
     return prompt_keyphrases
 
 def main(args):
@@ -255,14 +323,18 @@ def main(args):
     response_df['Most Frequent Words'] = most_frequent
 
     # get key phrases from each response
-    response_df['Key Phrases'] = response_df['Text'].apply(extract_key_phrases)
+
+    response_df['Key Phrases'] = response_df['Text'].apply(extract_key_phrases_by_relevance)
+    response_df['Key Phrases by relevance'] = response_df['Text'].apply(extract_key_phrases_by_relevance)
+
+
 
     # process context_prompt and compare its key phrases to responses
     with st.expander("Latest User Prompt"):
         with open(args.context_prompt, "r") as f:
             context_prompt = f.read()
         st.write(f"**Latest user prompt to model:** {context_prompt}")
-        prompt_keyphrases = extract_key_phrases(context_prompt)
+        prompt_keyphrases = extract_key_phrases_by_relevance(context_prompt)
         st.markdown(f"**Prompt Key Phrases:** {prompt_keyphrases}")
         response_df['prompt_phrases_included'] = response_df['Text'].apply(lambda text: any(phrase in text for phrase in prompt_keyphrases))
 
@@ -274,6 +346,14 @@ def main(args):
         index = create_index_by_row_number(response_df)
         searchable_index(index)
 
+    with st.expander("Display Five Most Relevant Key Phrases"):
+        display_4x4_text    (response_df['Key Phrases by relevance'].to_list(), "key phrases by relevance")
+
+    with st.expander("Display Word Cloud of Responses"):
+        display_4x4_images(list_of_responses)
+
+    with st.expander("Display Word Clouds of Key Phrases"):
+        display_4x4_images(response_df['Key Phrases'].to_list(), key="key_phrases")
 
     with st.expander("16-up notepad"):
        #   st.write(st.session_state["responses_with_notes"])
@@ -292,7 +372,7 @@ def main(args):
 
 
 def initialize(args):
-    input_dir = "input"
+    input_dir = "aitutorhelpers/input"
     import_file = args.input
     import_file_path = os.path.join(input_dir, import_file)
     with open(import_file_path, "r") as f:
@@ -340,7 +420,7 @@ def create_cleaned_df(list_of_responses):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Process text responses and optionally use xAI API.')
     parser.add_argument('--input', required=False, help='Path to the input file', default="response.txt")
-    parser.add_argument("--context_prompt", required=False, help='Path to the file holding the context prompt', default="prompt.txt")
+    parser.add_argument("--context_prompt", required=False, help='Path to the file holding the context prompt', default="aitutorhelpers/input/prompt.txt")
     parser.add_argument('--use_xai', action='store_true', help='Flag to enable xAI API for text analysis')
     args = parser.parse_args()
 
