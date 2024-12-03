@@ -330,12 +330,15 @@ def main(args):
 
 
     # process context_prompt and compare its key phrases to responses
-    with st.expander("Latest User Prompt"):
+    with st.expander("Full Context To Date", expanded=False):
         with open(args.context_prompt, "r") as f:
             context_prompt = f.read()
-        st.write(f"**Latest user prompt to model:** {context_prompt}")
-        prompt_keyphrases = extract_key_phrases_by_relevance(context_prompt)
-        st.markdown(f"**Prompt Key Phrases:** {prompt_keyphrases}")
+
+        st.write(f"**Latest user context dialog:** {context_prompt}", expanded=False)
+    with st.expander("Top 10 Key Phrases from Prompt By Relevance", expanded=True):
+
+        prompt_keyphrases = extract_key_phrases_by_relevance(context_prompt, n=10)
+        st.markdown(f"**Key Phrases:** {prompt_keyphrases}")
         response_df['prompt_phrases_included'] = response_df['Text'].apply(lambda text: any(phrase in text for phrase in prompt_keyphrases))
 
     with st.expander("Dataframe of Responses"):
@@ -409,12 +412,17 @@ def create_cleaned_df(list_of_responses):
     cleaned_responses = []
     for i, response in enumerate(list_of_responses):
         lines = response.splitlines()
-        cleaned_lines = [line for line in lines if
-                         not line.startswith("Words") and not line.startswith("Characters") and not line.startswith(
-                             "Paragraphs")]
+        cleaned_lines = clean_lines_beginning_with_words(lines)
         cleaned_responses.append({"Response": f"Response {i + 1}", "Text": "\n".join(cleaned_lines)})
     response_df = pd.DataFrame(cleaned_responses)
     return cleaned_responses, response_df
+
+
+def clean_lines_beginning_with_words(lines):
+    cleaned_lines = [line for line in lines if
+                     not line.startswith("Words") and not line.startswith("Characters") and not line.startswith(
+                         "Paragraphs")]
+    return cleaned_lines
 
 
 if __name__ == "__main__":
