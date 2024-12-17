@@ -3,11 +3,16 @@ import io
 import os
 import re
 import sys
+import traceback
 import uuid
 import argparse
 import random
 
 import textstat
+import sumy
+from sumy.nlp.tokenizers import Tokenizer
+from sumy.summarizers.lsa import LsaSummarizer
+from sumy.parsers.plaintext import PlaintextParser
 from wordcloud import WordCloud
 import matplotlib.pyplot as plt
 import streamlit as st
@@ -17,14 +22,22 @@ import pandas as pd
 from collections import Counter, OrderedDict
 from nltk.corpus import stopwords
 
+
+from utilities import Pandas_Utilities
+
 from PIL import Image, ImageDraw, ImageFont
 # Download stopwords if not already present
 nltk.download('stopwords', quiet=True)
 nltk.download('punkt')
 nltk.download('averaged_perceptron_tagger')
 
-xai_api_key = os.getenv('xAI_API_KEY')
-base_url = "https://api.x.ai/v1"
+
+def get_xai_api_key():
+    global xai_api_key, base_url
+    xai_api_key = os.getenv('xAI_API_KEY')
+    base_url = "https://api.x.ai/v1"
+
+get_xai_api_key()
 
 # Constants
 NUMBER_OF_RESPONSES = 16
@@ -219,18 +232,43 @@ def create_baseball_card_container(text):
         st.markdown(f"""### {card_name}""")
         reading_level = textstat.textstat.flesch_kincaid_grade(text)
         st.markdown(f"""**Reading Level (grade):** {reading_level}""")
+        top_3 = extract_top_three_sentences_7_words(text)
+        st.json(top_3)
         all_key_phrases = extract_key_phrases_by_relevance(text, n=50)
         # number of phrases that are in prompt that are found in response text
         prompt_phrases_in_responses = [phrase for phrase in all_key_phrases if phrase in text]
-        st.markdown(f"""**Prompt overlaps:** {len(prompt_phrases_in_responses)}""")
+        #st.markdown(f"""**Prompt overlaps:** {len(prompt_phrases_in_responses)}""")
 
         st.image(wordcloud_image)
 
     with tab2:
         # key phrases as markdown bullets
         st.json(key_phrases, expanded=True)
+        st.write("**Markdown Structure**    ")
+        toc = get_markdown_toc(text)
+        st.write(toc)
 
+def clean_lines_beginning_with_words(lines):
+    ignore_prefixes = {"Words", "Characters", "Paragraphs", "User Avatar", "Load", "Save", "TaskId"}
+    return [line for line in lines if not any(line.startswith(prefix) for prefix in ignore_prefixes)]
 
+def extract_top_three_sentences_7_words(text):
+    # split text into lines
+    raw_lines = text.splitlines()
+    # clean up lines
+    clean_lines = clean_lines_beginning_with_words(raw_lines)
+    # turn clean_lines back into text
+    text = " ".join(clean_lines)
+
+    top_3_sentences = summarize_text_using_statistical_methods(text)
+    # convert list of sentence objects to list of strings with sentence truncated after 7 words
+    top_3_sentences_strings = [str(sentence) for sentence in top_3_sentences]
+    top_3_sentences_strings = [sentence.split()[:7] for sentence in top_3_sentences_strings]
+    top_3_sentences_strings = [" ".join(sentence) for sentence in top_3_sentences_strings]
+    # add "..." to each item in list
+    top_3_sentences_strings = [sentence + " ..." for sentence in top_3_sentences_strings]
+
+    return top_3_sentences_strings
 
 
 def extract_key_phrases_by_relevance(text, n=5):
@@ -322,9 +360,18 @@ def initialize(args):
 
     return output_dir, text
 
+def get_markdown_toc(text, bolds=True):
+    # if text contains markdown headers beginning with #, extract them (only) and display
+# the toc
+    lines = text.splitlines()
+    lines = clean_lines_beginning_with_words(lines)
+    candidates = [line for line in lines if not line.startswith('#') and len(line.strip()) > 0 and '.' not in line and '\n\n' in text]
+    toc = "\n\n".join(candidates)
+    return toc
+
 
 def call_xai_api_on_responses(args, response_df):
-    if args.use_xai:
+    if args.use_xai_api:
         api_responses = []
         for index, row in response_df.iterrows():
             prompt = f"In fifteen words or less, identify the key weaknesses in this text: {row['Text']}"
@@ -336,12 +383,26 @@ def call_xai_api_on_responses(args, response_df):
         response_df['API Response'] = api_responses
 
 
-def create_cleaned_df(list_of_responses):
+def create_response_df(list_of_responses):
     cleaned_responses = []
     for i, response in enumerate(list_of_responses):
         cleaned_lines = clean_lines_beginning_with_words(response.splitlines())
-        cleaned_responses.append({"Response": f"Response {i + 1}", "Text": "\n".join(cleaned_lines)})
+        cleaned_responses.append({"Response ": f"{i + 1}", "Text": "\n".join(cleaned_lines)})
+
+
     return pd.DataFrame(cleaned_responses)
+
+def summarize_text_using_statistical_methods(text):
+    # use sumi
+    try:
+        summarizer = LsaSummarizer()
+        parser = sumy.parsers.plaintext.PlaintextParser.from_string(text, Tokenizer("english"))
+        summary_list = summarizer(parser.document, sentences_count=3)
+    except Exception as e:
+        print(traceback.format_exc())
+      #  st.write(traceback.format_exc(()))
+    #summary_text = " ".join([str(sentence) for sentence in summary])
+    return summary_list
 
 
 def extract_criteria_from_hard_coded_criteria_text(text):
@@ -370,6 +431,8 @@ def get_Flesch_Kinkaid_grade_level(text):
     return textstat.textstat.flesch_kincaid_grade(text)
 
 def main(args):
+    if args.use_xai_api:
+        get_xai_api_key() # sets up globals
     if xai_api_key is None:
         st.error("You must provide an API key from xAI.")
         return
@@ -382,34 +445,42 @@ def main(args):
         return
 
     list_of_responses = transform_response_text_into_list(text)
-    response_df = create_cleaned_df(list_of_responses)
+    response_df = create_response_df(list_of_responses)
 
     # Use xAI API if enabled
-    call_xai_api_on_responses(args, response_df)
+    if args.use_xai_api:
+        call_xai_api_on_responses(args, response_df)
+    st.toast("No large language models were harmed in the creation of this script.")
 
     concordance = create_concordance(text)
+    context_location = st.radio("Context Location", ["Default File System", "Upload"])
+    try:
+        with open(args.context_prompt, "r") as f:
+            context = f.read()
 
-    # Add metadata to response_df
-    response_df['placeholders_found'] = response_df['Text'].apply(count_placeholders)
-    response_df['Most Frequent Words'] = response_df.apply(
-        lambda row: most_frequent_words(row['Text'], n=3) if pd.notna(row['Text']) else [], axis=1)
-    response_df['Key Phrases'] = response_df['Text'].apply(extract_key_phrases_by_relevance)
-    response_df['Flesch-Kinkaid Grade Level'] = response_df['Text'].apply(get_Flesch_Kinkaid_grade_level)
-
+    except FileNotFoundError:
+        st.error(f"Context prompt file not found: {args.context_prompt}")
     # Process context prompt
     with st.expander("Full Context To Date", expanded=False):
-        try:
-            with open(args.context_prompt, "r") as f:
-                context_prompt = f.read()
-            st.write(f"**Latest user context dialog:** {context_prompt}")
-        except FileNotFoundError:
-            st.error(f"Context prompt file not found: {args.context_prompt}")
+        st.write(f"**Latest user context dialog:** {context}")
+    enhanced_response_df = enhance_response_df(response_df, context)
+    #st.write(enhanced_response_df)
 
     with st.expander("Top 10 Key Phrases from Prompt By Relevance", expanded=True):
-        prompt_keyphrases = extract_key_phrases_by_relevance(context_prompt, n=10)
+        prompt_keyphrases = extract_key_phrases_by_relevance(context, n=10)
         st.markdown(f"**Key Phrases:** {prompt_keyphrases}")
-        response_df['prompt_phrases_included'] = response_df['Text'].apply(
-            lambda text: any(phrase in text for phrase in prompt_keyphrases))
+        task_name = create_card_name(prompt_keyphrases[0])
+
+
+    with st.expander("User's Ask", expanded=True):
+        try:
+            with open(args.ask_file_path, "r") as f:
+                ask = f.read()
+                st.write(ask)
+
+        except Exception as e:
+            st.error(f"Ask file not read: {args.ask_file_path}")
+
 
     with st.expander("Crafted Criteria", expanded=True):
         try:
@@ -419,27 +490,61 @@ def main(args):
         except FileNotFoundError:
             st.error(f"Criteria file not found: {args.raw_criteria}")
 
-    with st.expander("Dataframe of Responses"):
-        st.write(response_df)
+    # with st.expander("Dataframe of Responses"):
+
+    st.session_state['edited_df'] = enhanced_response_df
+
+    with st.expander("Load Previous Work"):
+        # load saved dataframe to continue previous work
+        utils = Pandas_Utilities()
+        retrieved_df = utils.streamlit_file_picker()
+        if retrieved_df is not None:
+            st.session_state['edited_df'] = retrieved_df
+
+
+    with st.expander("Transposed for Easy Editing"):
+        cols = []
+        for r in range(1, 17):
+            cols.append(f"Response {r}")
+        transposed_df = enhanced_response_df.T
+        # column names for tra
+        transposed_df.columns = cols
+
+        # Convert object columns to strings
+        for col in transposed_df.columns:
+            if transposed_df[col].dtype == object:  #Could also use transposed_df[col].apply(type).eq(list).any():
+                transposed_df[col] = transposed_df[col].astype(str)  # Or handle lists specifically
+
+        edited_df = st.data_editor(transposed_df, hide_index=True, num_rows="dynamic")
+        save_df = st.button("Save Dataframe With Tutor Notes")
+        if save_df:
+            saved_df = edited_df
+            saved_df.to_csv(f"aitutorhelpers/output/{task_name}.csv")
+            st.session_state["edited_df"] = saved_df
+
+
+    with st.expander("Transposed Back for Easy Sorting (read-only)"):
+        retransposed_df = st.session_state['edited_df'].T
+        st.dataframe(retransposed_df, hide_index=True)
+
+
 
     with st.expander("Search Index of Responses"):
         index = create_index_by_row_number(response_df)
         searchable_index(index)
 
-    with st.expander("League Leaders"):
-        col1, col2, col3, col4 = st.columns(4)
-        easiest_reads = response_df.nsmallest(2, 'Flesch-Kinkaid Grade Level')
-        hardest_reads = response_df.nlargest(2, 'Flesch-Kinkaid Grade Level')
-        # drop indexes
-        easiest_reads = easiest_reads.reset_index(drop=True)
-        hardest_reads = hardest_reads.reset_index(drop=True)
-        # show me just the response number and the grade level
-        col1.write("Easiest Reads")
-        col1.write(easiest_reads[['Response', 'Flesch-Kinkaid Grade Level']])
-        col2.write("Hardest Reads")
-        col2.write(hardest_reads[['Response', 'Flesch-Kinkaid Grade Level']])
-
-
+    # with st.expander("League Leaders"):
+    #     col1, col2, col3, col4 = st.columns(4)
+    #     easiest_reads = response_df.nsmallest(2, 'Grade Level')
+    #     hardest_reads = response_df.nlargest(2, 'Grade Level')
+    #     # drop indexes
+    #     easiest_reads = easiest_reads.reset_index(drop=True)
+    #     hardest_reads = hardest_reads.reset_index(drop=True)
+    #     # show me just the response number and the grade level
+    #     col1.write("Easiest Reads")
+    #     col1.dataframe(easiest_reads[['R#', 'Grade Level']], hide_index=True)
+    #     col2.write("Hardest Reads")
+    #     col2.dataframe(hardest_reads[['R#', 'Grade Level']], hide_index=True)
 
 
     with st.expander("16-up: Baseball Cards"):
@@ -462,23 +567,46 @@ def main(args):
 
     index_df = index_to_dataframe(index)
     with st.expander("Index as DataFrame"):
-        st.write(index_df)
+        st.dataframe(index_df, hide_index=True)
 
     file_basename = str(uuid.uuid4())[:8] + ".csv"
     filepath = os.path.join(output_dir, file_basename)
     response_df.to_csv(filepath)
 
 
+def enhance_response_df(response_df, context_prompt, ask=None):
+
+    response_df['Grade Level'] = response_df['Text'].apply(get_Flesch_Kinkaid_grade_level)
+    response_df['Words'] = response_df['Text'].apply(lambda text: len(text.split()))
+    response_df['Top 3 Sents'] = response_df['Text'].apply(extract_top_three_sentences_7_words)
+    response_df['Key Phrases'] = response_df['Text'].apply(extract_key_phrases_by_relevance)
+    response_df['Most Frequent Words'] = response_df.apply(
+        lambda row: most_frequent_words(row['Text'], n=7) if pd.notna(row['Text']) else [], axis=1)
+    prompt_keyphrases = extract_key_phrases_by_relevance(context_prompt, n=10)
+    task_name = create_card_name(prompt_keyphrases[0])
+    response_df['prompt_phrases_included'] = response_df['Text'].apply(
+        lambda text: any(phrase in text for phrase in prompt_keyphrases))
+
+    response_df.insert(0, 'Tutor Notes', '')
+    response_df["Complies with Ask?"] = pd.Series([None] * len(response_df))
+    response_df["R#"] = response_df.index + 1
+    # move to spot 1
+    response_df = response_df.reindex(columns=['R#', 'Tutor Notes', 'Grade Level', 'Words','Complies with Ask?', 'Text',  'Top 3 Sents', 'Key Phrases', 'Most Frequent Words', 'prompt_phrases_included', ])
+
+
+    return response_df
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Process text responses and optionally use xAI API.')
     parser.add_argument('--input', required=False, help='Path to the input file', default="response.txt")
     parser.add_argument("--context_prompt", required=False, help='Path to the file holding the context prompt',
                         default="aitutorhelpers/input/prompt.txt")
-    parser.add_argument('--use_xai', action='store_true', help='Flag to enable xAI API for text analysis')
+    parser.add_argument('--use_xai_api', action='store_true', help='Flag to enable xAI API for text analysis')
     parser.add_argument("--l0_input", required=False, help="L0 input for review by L1",
                         default="aitutorhelpers/input/l0_input.txt")
     parser.add_argument("--raw_criteria", required=False, help="L0 stated criteria",
                         default="aitutorhelpers/input/criteria_raw.txt")
+    parser.add_argument("--ask_file_path", required=False,help="User stated intent", default="aitutorhelpers/input/ask.txt")
     args = parser.parse_args()
-
+    use_xai = args.use_xai_api
     main(args)
